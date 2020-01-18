@@ -1,0 +1,1002 @@
+---
+title: "NYC Council Data Science Test - CODE and APPENDIX"
+author: "Caffrey Lee"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, comment="", warning = FALSE, message = FALSE, tidy.opts=list(width.cutoff=80), tidy = TRUE)
+```
+
+```{r libraries}
+library(prettydoc)
+library(data.table)
+library(DT)
+library(ggplot2)
+library(scales)
+library(xts)
+library(zoo)
+library(forecast)
+library(tseries)
+library(formulaic)
+#library(ggseas)
+library(ggthemes)
+library(ggmap)
+library(stddiff)
+```
+
+```{r load data}
+dat = fread("NYPD_Arrests_Data__Historic_.csv")
+pop = fread('New_York_City_Population_by_Borough__1950_-_2040.csv') # this is modified version and use the uniformed total population of 2010 for across the year. 
+setnames(pop, old = c('V1', 'V2'), new = c('arrest_boro', '2010_ pop'))
+pop[, total:= sum(`2010_ pop`)]
+
+```
+
+```{r functions}
+
+basic.stat <- function(dat){
+  print(hist(dat))
+  quantile(dat)
+}
+
+length.unique <- function(dat, value.name, by = NA){
+  require(data.table)
+  this.dat <- setDT(x = dat)
+  
+  if(length(by) > 0){
+    if(!is.na(by[1])){
+      if(by[1] == ""){
+        by[1] <- NA
+      }
+    }
+  }
+  
+  if(is.na(by[1])){
+    dat.u <- unique(this.dat, by = value.name)
+    ans <- dat.u[, .(N = .N)]
+  }
+  if(!is.na(by[1])){
+    dat.u <- unique(this.dat, by = c(by, value.name))
+    ans <- dat.u[, .N, by = by]
+  }
+  return(ans)
+}
+
+
+round.numerics <- function(x, digits = 3){
+  if(is.numeric(x)){
+    x <- round(x = x, digits = digits)
+  }
+  return(x)
+}
+
+create.histogram <- function(dat, title, show.labels = T)
+{
+  if(show.labels == T){
+    ggplot(data = dat, aes(x = yr, y = perc)) +
+    geom_bar(stat = 'identity', aes(fill = target), colour = 'black', width = 0.6)+
+    facet_wrap(~ target) +
+    scale_fill_brewer(palette = "Spectral") +
+    geom_text(aes(label = paste0(perc*100," %")), vjust = -0.5,  size = 4) +
+    theme(legend.position = "top") +
+    xlab("Year") +
+    ylab("The rates") +
+    ggtitle(sprintf("Arrest Rates by %s", title))
+  } else {
+    ggplot(data = dat, aes(x = yr, y = perc)) +
+    geom_bar(stat = 'identity', aes(fill = target), colour = 'black', width = 0.6)+
+    facet_wrap(~ target) +
+    scale_fill_brewer(palette = "Spectral") +
+    theme(legend.position = "top") +
+    xlab("Year") +
+    ylab("The rates") +
+    ggtitle(sprintf("Arrest Rates by %s", title))
+  }
+}
+
+create.slop.chart <- function(dat, title){
+  theme_set(theme_classic())
+  
+  dat.2015 = dat[yr == min(dat$yr),] 
+  dat.2018 = dat[yr == max(dat$yr),]
+  dat.condensed = merge(dat.2015[, c(2,5)], dat.2018[, c(2,5)], by = 'target')
+  setnames(dat.condensed, old = c('perc.x', 'perc.y'), new = c(as.character(min(dat$yr)), as.character(max(dat$yr))))
+  
+  left= paste(min(dat$yr), dat.condensed$target,paste0( (dat.condensed$`2015`)*100, " %"), sep= ', ')
+  right= paste(max(dat$yr), dat.condensed$target,paste0( (dat.condensed$`2018`)*100, " %"), sep= ', ')
+
+  dat.condensed$class = ifelse((dat.condensed$`2015` - dat.condensed$`2018`) < 0, 'green', 'red')
+
+
+  plot = 
+    ggplot(dat.condensed) + geom_segment(aes(x=1, xend=2, y= `2015`, yend=`2018`, col= class), size=.75, show.legend=F) + 
+                  geom_vline(xintercept=1, linetype="dashed", size=.1) + 
+                  geom_vline(xintercept=2, linetype="dashed", size=.1) +
+                  scale_color_manual(labels = c("Up", "Down"), 
+                                     values = c("green"="#00ba38", "red"="#f8766d")) +  
+                  labs(x="", y=sprintf("Rate by %s", title)) + 
+    xlim(.5, 2.5)
+
+  
+  # Add texts
+  plot = plot + geom_text(label=left, y= dat.condensed$`2015`, x=rep(1, NROW(dat.condensed)), hjust=1.1, size=3.5)
+  plot = plot + geom_text(label=right, y= dat.condensed$`2018`, x=rep(2, NROW(dat.condensed)), hjust=-.1, size=3.5)
+
+  plot = plot + geom_text(label="Beginning", x=1, y=1.1*(max(dat.condensed$`2015`, dat.condensed$`2018`)), hjust=1.2, size=3) 
+  
+  plot = plot + geom_text(label="Ending", x=1, y=1.1*(max(dat.condensed$`2015`, dat.condensed$`2018`)), hjust=1.2, size=3) 
+  
+  plot + theme(panel.background = element_blank(), 
+           panel.grid = element_blank(),
+           axis.ticks = element_blank(),
+           axis.text.x = element_blank(),
+           panel.border = element_blank(),
+           plot.margin = unit(c(1,2,1,2), "cm"))
+  print(plot)
+}
+
+ssacf <- function(x){
+  sum(acf(x, na.action = na.omit)$acf^2)
+}# reference: https://www.r-bloggers.com/is-my-time-series-additive-or-multiplicative/
+
+
+compare_ssacf <-function(add,mult){
+  ifelse(ssacf(add) < ssacf(mult), "Additive", "Multiplicative")
+}
+# reference: https://www.r-bloggers.com/is-my-time-series-additive-or-multiplicative/
+
+my.format <- function(x, big.mark = ","){
+  return(format(x = x, big.mark = big.mark))
+}
+```
+
+## Introduction 
+
+*The purpose of this document is for the NYC Council Data Science Interview. It is done by Caffrey Lee solely.*
+
+
+### Description of the given data: 
+
+The given data contain the individual record of the arrest with the following number of observation and the number of features:  `r nrow(dat)` number of observations and `r ncol(dat)`. 
+
+```{r pop data}
+datatable(pop, caption = 'This is modified manually for the analysis')
+```
+
+### Exploring the data:
+```{r Exploring the data}
+# exploring the data
+names(dat)
+str(dat) # date must be fixed
+dat$ARREST_DATE = as.Date(dat$ARREST_DATE, format = "%m/%d/%Y")
+
+summary(dat)
+head(dat)
+
+# checking for the unique numbers of the arrest key 
+nrow(dat)== length.unique(dat = dat, value.name = 'ARREST_KEY') #T
+
+missing = sum(is.na(dat)) # 9104
+missing.rates = round((missing / nrow(dat)) * 100, digits = 2)# 0.19  
+w = which(is.na(dat))
+datatable(dat[w,], caption = 'Table 1: This is missing value table', options = list(columnDefs = list(list(
+  targets = 1,
+  render = JS("function(data, type, row, meta) {",
+    "return data === null ? 'NA' : data;","}")))))
+# it seems that every columns are missing as well. In other words, no clue to trace back! Just drop them. 
+```
+
+### Imputing missing values: 
+
+Looking at the Table 1, one could see that the entire columns are missing data, *NA*. That is, it is impossible to trace back impute the values. Also, the missing rates are not critical: `r missing.rates`%. Hence, I decided to simply remove the rows that are missing by dropping the NA values.
+
+
+```{r clean_dat}
+# Simply dropping the NA values first
+clean_dat = na.omit(dat)
+sum(is.na(clean_dat))
+str(clean_dat)
+
+```
+
+Since most of the columns are descriptive, or non-numerical, it is worth to check the unique ones. 
+
+
+### Deep dive into the columns: 
+```{r unique values check}
+
+#cols = colnames(clean_dat)
+#for(i in seq(cols)){
+#  print(length.unique(clean_dat, value.name = cols[i]))
+#}
+# check the unique numbers
+clean_dat[, lapply(.SD, FUN = function(x){length(unique(x))})]
+
+
+# check the unique values for demo related columns 
+demo.unique.tab = clean_dat[, lapply(.SD, FUN = 'unique'), .SDcols = c('ARREST_BORO', 'ARREST_PRECINCT', 'PERP_RACE', 'PERP_SEX', 'AGE_GROUP')]
+
+datatable(demo.unique.tab)
+
+## Seems like the age group is not workable! And, the boro has a bad apple: "" see if I could impute it
+
+## before that make the columsn in to low key... 
+colnames(clean_dat) = tolower(colnames(clean_dat))
+
+# try with the arrest_precint:
+min.tab = clean_dat[, .(min = min(arrest_precinct)), by = arrest_boro]
+max.tab = clean_dat[, .(max = max(arrest_precinct)), by = arrest_boro]
+
+comb.tab= merge(min.tab, max.tab, by = 'arrest_boro')
+datatable(comb.tab)
+
+clean_dat[, summary(arrest_precinct), by = arrest_boro]
+rm(comb.tab)
+rm(min.tab)
+rm(max.tab)
+
+## using long and lat to find out: 
+geo.tab = clean_dat[, arrest_boro, by = c('longitude', 'latitude')]
+map =  get_map(c(left = min(geo.tab[arrest_boro == "", longitude]), bottom = min(geo.tab[arrest_boro == "", latitude]), right = max(geo.tab[arrest_boro == "", longitude]), top = max(geo.tab[arrest_boro == "", latitude])))
+
+ggmap(map) + geom_point(data=geo.tab[arrest_boro == ""], aes(x=longitude, y=latitude, color=arrest_boro))
+
+rm(geo.tab)
+## After this cannot really relate to a specific boro. Check how many cases are there if its small then, rather disregard for the sake of time. But, for the future reference, I may also look the longitude and latitude to impute the boro. But, this take times so just skip for now. 
+
+missing.boro.num = clean_dat[arrest_boro == "", .N] #8
+
+# 8.. OK, get rid of them.
+
+clean_dat = clean_dat[arrest_boro != "", ]
+
+```
+
+The 'arrest_boro' had 6 unique keys: B,K,M,Q,S,and "". I tried to impute the "" by observing the arrest_precinct. To do so, I took a look at the min and max of the precinct values of each factor. However, there are some overlaps. In other words, they are not distinguishable merely by comparing the precinct. 
+In addition to that, as the above map shows, I tried to locate the missing borough by plotting out the map. It seems that they are scattered all around the borough. Therefore, I decided to drop the rows.
+
+(The number of cases with "" are only `r missing.boro.num` observations, which is `r  round(missing.boro.num / nrow(clean_dat) *100, 2)`% of the given data. That is trivial.)
+
+```{r unique values check2, include = F}
+unique(clean_dat$perp_sex) # clean 
+unique(clean_dat$arrest_boro) # clean now
+unique(clean_dat$age_group) # need to clean
+unique(clean_dat$perp_race) # clean but with unknown
+
+pop.tab = clean_dat[, .N, by = perp_race]
+pop.tab[, perc := round(N/sum(N), digits = 2)]
+datatable(pop.tab)
+# based on the pop.tab, I will coerce unknown into other. (This may not be needed though)
+
+clean_dat[perp_race == 'UNKNOWN', perp_race := 'OTHER']
+clean_dat[, .N, by = perp_race]
+
+
+#### NOW clean the age group
+clean_dat[, .N, by = age_group]
+str(clean_dat$age_group)
+
+# I will put anything that is not in the range, pure numerical numbers into the UNKNOWN. 
+clean.group = c('<18','18-24','25-44','45-64','65+','UNKNOWN')
+clean_dat[! age_group %in% clean.group, age_group := 'UNKNOWN']
+unique(clean_dat$age_group)
+clean_dat[, .N, by = age_group]
+
+# creating yr and yr_mon columns for later
+clean_dat[, yr:= as.numeric(format(arrest_date, '%Y'))]
+clean_dat[, yr_mon:= format(as.Date(clean_dat$arrest_date, format = '%Y-%m-%d'), format ='%Y-%m')]
+
+clean_dat[, .N, by = yr_mon]
+# clean_dat = merge(clean_dat, pop, by= 'arrest_boro')
+## for the future save the clean_dat
+# fwrite(clean_dat, 'NYC Interview Clean.csv')
+```
+
+Up to this point, I have done data exploration, cleaning, and wrangling. 
+
+For the age group, there were quite a few values that cannot be utilized, for instance, '338', '740', and such. As one can see this number does not tell anything about the age nor age group. Hence, I re-categorized them into the unknown. 
+
+Regarding races, it was relatively clean, saying that every category makes sense; yet, I prefer not to have unknown, especially when there is a category called "Other". So, I put them together.
+
+Besides, I generated time-related columns: yr and yr_mon to perform yearly and monthly based analysis. 
+
+After cleaning the data, the final data that I utilized for the analysis has `r nrow(clean_dat)` of observations with `r ncol(clean_dat)` columns with a missing rate of 0%. In short, the following analysis is based on the `r round(nrow(clean_dat)/nrow(dat)*100, digits = 2)`% of the given data.
+
+Lastly, I will use the the total population from the population data, which I obtained from the NYC Open Data(reference: https://data.cityofnewyork.us/City-Government/New-York-City-Population-By-Community-Districts/xi7c-iiu2) across the year.
+
+## ANALYSIS & ANSWERING: 
+
+### **1. Has the arrest rate been decreasing from 2015-2018? Describe the trend and defend any statistical tests used to support this conclusion. **
+
+*Population* would be one of the most commonly used candidates to compute the *arrest rate* as followed:  $$ Arrest / Population $$ 
+where Arrest represents the number of arrests and Population is total population **(uniformed)**. 
+*Population* would be one of the most commonly used candidates to compute the *arrest rate* as followed:  $$ Arrest / Population $$ 
+where Arrest represents the number of arrests and Population is total population **(uniformed)**. 
+
+Yet, directly using the total population has *shortcomings*, for instance, the uniformed data may mislead the result since it does *not* take the demographic differences among the neighbors into considerations such as ethnicity, social environment, economic status, and such. 
+In the question, the definition of the arrest rate is a bit abstract. The rate could be based on the population or other variables such as race, age, borough, sex, arrest types, and such. Hence, I would also utilize the above-mentioned variables to calculate the arrest rate of each case by year as well as the total population. 
+
+Another thing that I would like to mention is that it is not clear if the difference is between the two years, 2015 and 2018 only, or the overall trend across time. To be safe, I will plot the slop chart for the difference between 2015 and 2018; and, I will plot the histogram (bar) to show the trend during the time. 
+Before I jumped into the analysis, I would like to make the following assumption: 
+
++ Assumptions:
+  - I assume that the population does *not* fluctuate across time. (This is confirmed with the 2018 NYC population data from Statista: the total population is 8,398,748 when `r my.format(8242624)` is the total population that I used across the year; reference: https://www.statista.com/statistics/799563/resident-population-of-nyc-by-race/)
+  - For simplicity, I *ignore* the traits of the neighbors such as the proportion of each ethnicity, social environment, economic status, and such.
+  - I presume that every case is *independent*. This also excludes multiple crime, arrest, cases of a single person. 
+  - Consecutive observations are *equally spaced*
+  - Apply a *discrete-time* index, yearly, (even though this may only hold approximately) 
+
+
+For descriptive statistics, trend analysis on the overall arrest rate, arrest rate difference between 2015 and 2018, and the arrest rate of demographics - race, age group, borough, and gender - and top 5 arrest types.
+ 
+
+##### Trend Analysis 
+
++ Methodology: Calculate the **arrest rate**, calculated by `number of arrests divided by the total population`, of each month and compare that to each other throughout the year as well as taking a close look at the monthly data.
+
+```{r question 1 time series}
+rm(dat)
+total.pop = unique(pop$total)
+# making sure that dates are ascending order 
+setorderv(x = clean_dat, cols = 'arrest_date', order = 1)
+
+arrest.dat = clean_dat[, .N, by = c('yr_mon')]
+arrest.dat = arrest.dat[, .(Rate = (N/total.pop)*100), by = yr_mon]
+
+# creating the ts dat
+ts.dat = ts(data = arrest.dat[,-1], start = c(2006,1), end = c(2018,12), frequency = 12)
+
+# parsing only 2015 to 2018
+ts.dat.window = window(ts.dat, 2015, c(2018,12))
+
+#time(ts.dat.window)
+#cycle(ts.dat.window)
+cor(ts.dat.window, lag(ts.dat.window), use = 'complete.obs')
+
+autoplot(ts.dat.window, facet = T)+ ylab('Overall Arrest Rate')
+
+# STL (Seasonality and Trend Decomposition using Loess)
+autoplot(stl(ts.dat.window[,1], s.window = 'periodic', robust = T))
+
+# Chekcing for the seaonality
+ggseasonplot(ts.dat.window, year.labels = TRUE, year.labels.left = TRUE) +
+  ylab("Arrest Rate") +
+  xlab("Month") +
+  ggtitle("Seasonal Plot: Overall Arrest Rate") # Weak Seaonality
+
+# Variation by the month
+ggsubseriesplot(ts.dat.window) +
+  ylab("Arrest Rate") +
+  xlab("Month") +
+  ggtitle("Sub Seasonal Plot: Overall Arrest Rate")
+
+
+boxplot(ts.dat.window~cycle(ts.dat.window), xlab = 'Months', ylab = 'Overall Arrest Rate')
+
+# Random Walk test:
+Box.test(ts.dat.window, type = "Ljung-Box") # NOT WHITE NOISE
+# Stationary test restrict one!
+adf.test(ts.dat.window, alternative="stationary", k = 0) # p = 0.01. That is, it is stationary.
+# Stationary around trend test
+kpss.test(ts.dat.window, null = 'Trend') # p-val = 0.1, The null hypothesis of stationarity around a trend is NOT rejected.
+# White noise around trend test
+kpss.test(ts.dat.window, null = 'Level') # p-val < 0.01:  The null hypothesis of stationarity around a level is rejected. That is, white noise around a trend so it is definitely a stationary process but has a trend  
+```
+
+Based on time series analysis on the overall arrest rate, one could say that the arrest rate has a **decreasing trend** with seasonality. (Note: the number of arrests has been reported in the data also decreases as the time goes)
+
+To have a better understanding of the seasonality, I plotted out the sub seasonality plot; and, it aligns with the Seasonal Trend Decomposition using Loess (STL). Broadly speaking, the arrest rates fluctuate throughout the years; and December has the lowest arrest rate when January has the lowest variation.  The lowest arrest rate in December may be explained by the Holiday season.
+
+
+I took this to see the difference between the beginning year, 2015, and the end year, 2018. And, following is the results:
+
++ Methodology: Calculating the difference between the arrest rates of only those two years: 2015 and 2018. Then, plot out the slope chart to show the relationship. 
+
+```{r question 1 slope chart 2015 vs 2018, echo = T}
+
+# Race
+rate.by.race = clean_dat[yr >= 2015, .N, by = c('yr','perp_race')]
+rate.by.race[, rate := round((N / total.pop)*100, digits = 2), by = yr]
+rate.by.race[, perc := round(rate / sum(rate), digits = 2), by = yr]
+setorderv(rate.by.race, cols = c('yr', 'perp_race'), order = c(-1,1))
+setnames(x = rate.by.race, old = 'perp_race', new = 'target')
+
+create.slop.chart(dat = rate.by.race, title = 'Race')
+
+# age
+rate.by.age = clean_dat[yr >= 2015, .N, by = c('yr','age_group')]
+rate.by.age[, rate := round((N / total.pop)*100, digits = 2), by = yr]
+rate.by.age[, perc := round(rate / sum(rate), digits = 2), by = yr]
+setorderv(rate.by.age, cols = c('yr', 'age_group'), order = c(-1,1))
+setnames(x = rate.by.age, old = 'age_group', new = 'target')
+
+create.slop.chart(rate.by.age, 'Age')
+
+# borough
+rate.by.borough = clean_dat[yr >= 2015, .N, by = c('yr','arrest_boro')]
+rate.by.borough[, rate := round((N / total.pop)*100, digits = 2), by = yr]
+rate.by.borough[, perc := round(rate / sum(rate), digits = 2), by = yr]
+setorderv(rate.by.borough, cols = c('yr', 'arrest_boro'), order = c(-1,1))
+setnames(x = rate.by.borough, old = 'arrest_boro', new = 'target')
+
+create.slop.chart(dat = rate.by.borough, 'Borough')
+
+# sex
+rate.by.sex = clean_dat[yr >= 2015, .N, by = c('yr','perp_sex')]
+rate.by.sex[, rate := round((N / total.pop)*100, digits = 2), by = yr]
+rate.by.sex[, perc := round(rate / sum(rate), digits = 2), by = yr]
+setorderv(rate.by.sex, cols = c('yr', 'perp_sex'), order = c(-1,1))
+setnames(x = rate.by.sex, old = 'perp_sex', new = 'target')
+
+create.slop.chart(dat = rate.by.sex, 'Gender')
+
+# offense description
+rate.by.ofns_desc = clean_dat[yr >= 2015, .N, by = c('yr','ofns_desc')]
+rate.by.ofns_desc[, rate := round((N / total.pop)*100, digits = 2), by = yr]
+rate.by.ofns_desc[, perc := round(rate / sum(rate), digits = 2), by = yr]
+setorderv(rate.by.ofns_desc, cols = c('yr', 'perc'), order = c(-1,-1))
+setnames(x = rate.by.ofns_desc, old = 'ofns_desc', new = 'target')
+
+# take the top 5
+rate.by.ofns_desc.top5 = rate.by.ofns_desc[, .SD[1:5] , by = yr]
+
+
+create.slop.chart(dat = rate.by.ofns_desc.top5, 'Top5 Types')
+```
+
+The result of the slop chart shows that there is not much change between the two years for the arrest rate of race and gender, while there is an obvious difference for the age group, borough, and the offense description.    
+
+
+Now, I take a look at it by the yearly trend:
+
++ Methodology: calculate the percentage of each factor of the variables: race, age group, gender, borough, and top 5 types of crime. Then, plot out the histogram of the account rates of each factor throughout the year.
+
+
+```{r question 1 histogrm by yr}
+# by race
+create.histogram(dat = rate.by.race, title = 'Race')
+
+# by age
+create.histogram(dat = rate.by.age, title = 'Age')
+
+# by borough
+create.histogram(dat = rate.by.borough, title = 'Borough')
+
+# by sex
+create.histogram(dat = rate.by.sex, title = 'Gender')
+
+# by ofns_desc
+create.histogram(dat = rate.by.ofns_desc.top5, title = 'Top5 Types')
+
+rm(rate.by.age)
+rm(rate.by.borough)
+rm(rate.by.ofns_desc)
+rm(rate.by.race)
+rm(rate.by.sex)
+```
+
+Unlike the trend analysis on the overall arrest rate, the arrest rates based on the demographics do not show distinctive trends but stays almost the same. 
+Still, one could see a change from the arrest rates of age group, borough, and top 5 offense descriptions: the arrest rate of the age group 25-44 increases, while that of 18-24 decreases; and, the assault 3 & related offenses and the vehicle and traffic laws increase as the times goes by, while the dangerous drugs and the other offenses related to theft are decreasing. The most interesting point from this plot would be that felony assault is raised in 2018 as one of the top 5 arrest types when other offenses related to theft is not on the list anymore.
+
+Based on both charts, I could say that the arrest rates of the race and sex do not have any distinctive trends unlike those of the age group, borough, and the types of arrest.
+
+In short, the overall arrest rate throughout the time shows the decreasing trend; however, the arrest rate of race, gender, age group, borough, and the top 5 arrest types shows the different results: most of the demographics based arrest rates do not change much, while the top 5 arrest types, age group, and borough display distinctive changes.
+
+
+Let's confirm with the regression analysis for the overall trend of arrest rate:
++ Regression Analysis: linear regression
+```{r question 1 regression analsis}
+
+q1.dat = clean_dat[yr >=2015 & ofns_desc %in% unique(rate.by.ofns_desc.top5$target), .N, by = c('arrest_date', 'age_group', 'perp_race', 'perp_sex', 'arrest_boro', 'ofns_desc', 'yr', 'yr_mon')] 
+
+rm(rate.by.ofns_desc.top5)
+
+q1.dat[, Rate:= (N/total.pop)*100, by = yr]
+
+formula = create.formula(outcome.name = 'Rate', input.names = c('age_group', 'perp_race', 'perp_sex', 'arrest_boro', 'ofns_desc', 'yr'), dat = q1.dat, max.input.categories = 7, reduce = T)
+
+#formula2 = create.formula(outcome.name = 'N', input.names = c('age_group', 'perp_race', 'perp_sex', 'arrest_boro', 'ofns_desc', 'yr'), dat = q1.dat, max.input.categories = 7, reduce = T)
+
+lm = lm(formula = formula, data = q1.dat)
+#lm2 = lm(formula = formula2, data = q1.dat)
+
+summary(lm)
+#summary(lm2)
+
+
+# this is based on the simple linear regression. 
+#ggplot(q1.dat, aes(x = yr, y = Rate)) + 
+#  geom_point() +
+#  stat_smooth(method = "lm", col = "red")
+
+rm(q1.dat)
+
+```
+
+
+As an extension of descriptive statistics, I performed a multivariate linear regression with the following formula: 
+$$  Rate =  b_1AgeGroup + b_2Race + b_3Gender + b_4Borough+ b_5Types + b_6Year $$
+
+The result of the linear regression also states that the arrest rates are decreasing as across the time holding the above-mentioned variable fixed. Controlling for other variables, one year increase in year would decrease the arrest rate by -8.014e-07 on average.
+
+
+### **2. What are the top 5 most frequent arrests as described in the column 'pd_desc' in 2018? 
+Compare & describe the overall trends of these arrests across time.**
+
+I break the question into two parts: figuring out the top 5 pd_desc in 2018 and looking for the trend.
+
++ Part one: figuring out the top 5 arrests in 2018. 
+
+**Here, the question asked about the frequency, which I take it as the number of occurrences, instead of rate. That is, the following analysis is based on the absolute number rather than the rate, calculated by frequency/population**
+
+
+```{r question 2 figuring out the top 5}
+pd_desc.num = length(unique(clean_dat$pd_desc))
+pd_desc.uniq = unique(clean_dat$pd_desc)
+
+tab = clean_dat[yr == 2018, .N, by = pd_desc][order(-N)]
+tab[, perc := round(N / sum(N) *100, digits = 2)]
+
+datatable(tab[1:5], rownames = F)
+#rm(tab)
+```
+
+There are `r pd_desc.num` types of arrests in the column. Yet, there are `r nrow(tab)` number of the arrest types.
+
+As the above table shows, the top 5 pd_desc types in 2018 are Assult 3, Larceny Petit From Open Areas, Traffic, Assault 2&1, and Controlled Substance. 
+
++ Side: I wanted to check if the monthly top 5 types consistent with the year based. 
+
+```{r question 2 figuriout out the top 5 monthly}
+#rm(tab)
+
+tab.mon = clean_dat[yr == 2018, .N, by = c('pd_desc','yr_mon' )]
+tab.mon[, perc := round(N / sum(N) *100, digits = 2), by = 'yr_mon']
+setorderv(tab.mon, cols = c('yr_mon', 'perc'), order = c(-1,-1))
+
+tab.mon.top.5 = tab.mon[, .SD[1:5], by = yr_mon]
+
+datatable(tab.mon.top.5,rownames = F)
+datatable(tab.mon.top.5[, .N, by = pd_desc])
+
+rm(tab.mon.top.5)
+```
+
+The above table shows that the yearly top 5 arrest type in 2018 aligns with that of monthly top 5 types of that year.
+
+
++ Part two: compare and describe the overall trends of these types over the time 
+
+```{r question 2 compare and trend}
+top.5.pd_desc = tab[, pd_desc][1:5]
+
+# parsing the top 5 from the overall data
+comparison.tab = clean_dat[pd_desc %in% top.5.pd_desc, .N, by = c('yr','pd_desc')]
+
+comparison.tab[, perc := round(N / sum(N), digits = 2), by = yr]
+setorderv(comparison.tab, cols = c('yr', 'perc'), order = c(-1,-1))
+comparison.tab[, rank:= 1:.N, by = yr]
+comparison.tab[, diff:= rank - shift(rank), by = pd_desc]
+datatable(comparison.tab, rownames = F)
+
+setnames(x = comparison.tab, old = 'pd_desc', new = 'target')
+
+create.histogram(dat = comparison.tab, title = 'Top 5 Types', show.labels = F)
+
+## overal time series
+top.5.dat = clean_dat[pd_desc %in% top.5.pd_desc, .N, by = c( 'yr_mon')]
+#top.5.dat = top.5.dat[, mean:= mean(N), by = c('yr_mon')]
+
+top.ts = ts(data = top.5.dat[,-1], start = c(2006,1), end = c(2018,12), frequency = 12)
+
+autoplot(top.ts, facet = T)+ ylab('Numb. of Arrest of Top 5')
+
+ggAcf(x = top.ts, lag.max = 12*12)
+pacf(top.ts)
+# it is highly auto-correlated with the adjecent year and the year before with high seasonality
+
+# STL (Seasonality and Trend Decomposition using Loess)
+autoplot(stl(top.ts[,1], s.window = 'periodic', robust = T))
+
+
+# Chekcing for the seaonality
+ggseasonplot(top.ts, year.labels = TRUE, year.labels.left = TRUE) +
+  ylab("Numb. of Top 5 Arrests") +
+  xlab("Month") +
+  ggtitle("Seasonal Plot: Top 5 Arrests") 
+
+# Variation by the month
+ggsubseriesplot(top.ts) +
+  ylab("Numb. of Top 5 Arrests") +
+  xlab("Month") +
+  ggtitle("Sub Seasonal Plot: Top 5 Arrests")
+
+boxplot(top.ts~cycle(top.ts), xlab = 'Months', ylab = 'Top 5 Arrest Rates')
+
+# Stationary test
+adf.test(top.ts, alternative="stationary") # p = 0.5. That is, it is not stationary.
+
+# Stationary around trend test
+kpss.test(top.ts, null = 'Trend', lshort = F) # p-val = 0.04, The significant test statistic indicates that it is not stationarity .
+# White noise around trend test
+kpss.test(top.ts, null = 'Level', lshort = F) # p-val < 0.05:  The null hypothesis of stationarity around a level is rejected. That is, not a stationary.  
+
+
+```
+
+Although the arrest frequency of Assault 3 has been varied between 29% and 43%, it accounts for the biggest portion of the arrest rate across the year, from 2009 to 2018. The rate of another type of Assault, 2&1, does not show much fluctuation. Still, one could see that since 2012, it is not listed on the top 3 anymore. 
+
+On the other hand, the arrest frequency of the Controlled Substance, Possession 7 type is decreasing from 39% to 12%. Until 2015, it was rated as top 3 arrest types; nevertheless, it has made its progress that it is enlisted on bottom 2 since then. 
+
+Starting from 2014, the arrest of crime type, LARCENY,PETIT FROM OPEN AREAS,UNCLASSIFIED, increased by `r ((27123 - 12571) / 12571) *100` % in 2014 compare to the previous year. And, the rate remains that high or increases. Similarly, one could see that the arrest type of TRAFFIC, UNCLASSIFIED MISDEMEAN has a huge increase in 2012. In details, it increased  by `r (14791 - 3050) / 3050 *100` % compare to the previous year. And, it accounts about `r comparison.tab[target == 'TRAFFIC,UNCLASSIFIED MISDEMEAN' & yr >= 2012, mean(perc)]`% of the arrest since then.
+
+Regarding the overall trend of the top 5 arrest types, one could say that the trend is moving from increasing to decreasing starting from 2014 and that there is a high seasonality. Lastly, December is the month that has the lowest arrest rates throughout the years, when May has the highest. 
+
+Still, one could say that the **frequency** of those top 5 types is **increased** due to the fact that the mean of overall number of arrests of those types is increased compared to that of the beginning year. This could be supported by the the plot as followed:
+
+
+```{r question 2 regession analysis}
+q2.dat = clean_dat[pd_desc %in% top.5.pd_desc, .N, by = c('yr','pd_desc', 'arrest_date', 'yr_mon')]
+
+q2.dat[, mean:= mean(N), by = yr_mon]
+
+formula2 = create.formula(outcome.name = 'mean', input.names = c('yr', 'pd_desc'), dat = q2.dat)
+
+lm2 = lm(formula = formula2, data = q2.dat)
+summary(lm2)
+
+ggplot(q2.dat, aes(x = yr, y = mean)) + 
+  geom_point() +
+  stat_smooth(method = "lm", col = "red")
+
+rm(q2.dat)
+```
+
+
+### **3. If we think of arrests as a sample of total crime, is there more crime in precinct 19 (Upper East Side) than precinct 73 (Brownsville)? Describe the trend, variability and justify any statistical tests used to support this conclusion.**
+
+The question mentioned that the data, sample, could represent the total crime. That is, it is a representative sample that allows me to draw a conclusion of the population based on the analysis of the sample with confidence. Say that, number of arrests can represent the crime rates. With that in mind, the analysis is conducted. 
+
+**As a side note: The overall crime rate in Brownsville, precinct 73, is 16% higher than the national average, while the overall crime rate in Upper East Side, precinct 19, is 28% lower than the national average. (reference: https://www.areavibes.com/brownsville-tx/crime/)**
+
++ Methodology: calculate the **monthly mean of arrests** of each precinct across the year, then compute the **difference** between them. And, plot out the difference by year. Here, I took the mean difference to alleviate the difference between the two districts as well as the difference across the time.
+
++ Computing mean of arrest
+```{r question 3}
+# parsing 19
+tab.19 = clean_dat[arrest_precinct == 19, .N, by = c('arrest_date','arrest_precinct', 'yr_mon')]
+# compute the arrest rate by mean of month
+tab.19 = tab.19[, mean(N), by= yr_mon]
+setnames(x = tab.19, old = 'V1', new = '19')
+
+# parsing 73
+tab.73 = clean_dat[arrest_precinct == 73, .N, by = c('arrest_date','arrest_precinct','yr_mon')]
+# compute the arrest rate by mean of month
+tab.73 = tab.73[, mean(N), by= yr_mon]
+setnames(x = tab.73, old = 'V1', new = '73')
+
+tab.19.73 = merge(tab.19, tab.73, by = 'yr_mon')
+
+basic.stat(tab.19.73$`19`)
+basic.stat(tab.19.73$`73`)
+#cor(tab.19.73$`19`, tab.19.73$`73`)
+
+tab.19.73[, mean_diff := `73` - `19`, by = yr_mon]
+
+ggplot(tab.19.73, aes(x=as.Date(paste0(yr_mon,"-01")), y=mean_diff)) +
+  geom_line(color = '#69b3a2')+
+  xlab("") +
+  ylab("Difference over the time (73 - 19)")+
+  scale_x_date(date_breaks = "6 month", date_labels = "%y")
+
+```
+
+Answering the first part of the question, precinct 73 has a higher average number of crime than precinct 19 across the time on average throughout the year. And, this aligns with the aforementioned reference. It claims that precinct 73 has higher crime rates than the national average, while precinct 19 has fewer crime rats than that. 
+
+To have a better understanding of the impact of the locales, I took a regression analysis. And, the following is the result:
+
+
+```{r question3 regression analysis}
+
+q3.dat = clean_dat[arrest_precinct == 19 | arrest_precinct == 73, .N, by = c('yr', 'arrest_date', 'yr_mon', 'arrest_precinct')]
+
+q3.dat[, mean := mean(N), by = yr_mon]
+q3.dat$arrest_precinct = as.factor(q3.dat$arrest_precinct)
+
+formula3 = create.formula(outcome.name = 'mean', input.names = c('yr', 'arrest_precinct'), dat = q3.dat)
+
+lm3 = lm(formula = formula3, data = q3.dat)
+summary(lm3)
+
+ggplot(q3.dat, aes(x = yr, y = mean)) + 
+  geom_point() +
+  stat_smooth(method = "lm", col = "red")
+
+rm(q3.dat)
+
+```
+
+Based on the P-val of the precinct, one could say that the location does not have a statistical impact on the mean of crime controlling the year fixed. In contrast, the year has a statistical impact on the monthly mean number of arrests. 
+ 
+Further research on the characteristics of each neighborhood such as ethnicity, environment, economic status, and such could help one to have a better understanding of the crime rates.  
+
+
++ Trend Analysis on those two areas:
+
+```{r question 3 time series}
+
+final.tab = tab.19.73[, c(1,4)]
+
+ts.dat = ts(data = final.tab[,-1], start = c(2006,1), end = c(2018,12), frequency = 12)
+
+plot.ts(ts.dat, type= "b", main = "Mean Difference Over Time", xlab = "Years", ylab = "Difference btw the Precincts", col = '#69b3a2', pch = "*") 
+
+# STL (Seasonality and Trend Decomposition using Loess)
+autoplot(stl(ts.dat[,1], s.window = 'periodic'))
+
+# Chekcing for the seaonality
+ggseasonplot(ts.dat, year.labels = TRUE, year.labels.left = TRUE) +
+  ylab("Difference btw the Precincts") +
+  xlab("") +
+  ggtitle("Seasonal Plot: Difference Over Time") # Weak Seaonality
+
+# Variation by the month
+ggsubseriesplot(ts.dat) +
+  ylab("Difference btw the Precincts") +
+  xlab("") +
+  ggtitle("Sub Seasonal Plot: Difference Over Time")
+
+boxplot(ts.dat~cycle(ts.dat), xlab = 'Months', ylab = 'Difference btw the Precincts')
+
+ggplot(tab.19.73, aes(x=as.Date(paste0(yr_mon,"-01")), y=`73`)) +
+  geom_line(color = 'red')+
+  xlab("") +
+  ylab("Mean Crimes of '73'")+
+  scale_x_date(date_breaks = "6 month", date_labels = "%y")
+```
+
+Regarding the trend, one could say that it is moving from increasing to decreasing trend from 2011 with high seasonality. This happens mostly because the crime rates in precinct 73 are decreasing. For instance, after reaching the peak rate, 43.87%, in 2011-07, it gradually decreases. And, the rate remains around 13% since 2018-08. 
+
+NOTE: The trend is based on the difference of the monthly mean arrest between the two region across the year.
+ 
+
+### **4. What model would you build to predict crime to better allocate NYPD resources? What challenges do you foresee? What variables would be included? How would you evaluate the model? Discuss in no more than 150 words.**
+
+```{r question 4 data validation}
+# Stationary
+ggAcf(x = ts.dat, lag.max = 12*12)
+pacf(ts.dat)
+
+# Random Walk test:
+Box.test(ts.dat, type = "Ljung-Box", lag = 12*12) # NOT WHITE NOISE
+
+# Stationary test restrict one!
+adf.test(ts.dat, alternative="stationary", k = 0) # p = 0.01. That is, it is stationary.
+# Stationary around trend test
+kpss.test(ts.dat, null = 'Trend', lshort = T) # p-val = 0.01, The null hypothesis of stationarity around a trend is rejected.
+
+# White noise around trend test
+kpss.test(ts.dat, null = 'Level', lshort = T) # p-val = 0.01:  The null hypothesis of stationarity around a level is rejected. 
+```
+As a stationary check, I ran the Dickey–Fuller Test (adf.test), Kwiatkowski-Phillips-Schmidt-Shin (kpss.test), and the Ljung-Box test(Box.test). According to the p-values of `Box.test` and `kpss.test`, it is a random walk; however, `adf.test` says otherwise: the data is stationary. The result of `adf.test` contradicts that of `kpss.test`. It may be  caused because I do not have enough data or neither test is powerful enough to reject the null hypothesis. 
+**Here, the rate is not stabilized, which could be done with Box-Cox Transformation as followed: `BoxCox(ts.dat,lambda = BoxCox.lambda(ts.dat))`. Also, the trend and seasonality are not removed yet**
+
+
+How about Additive or Multiplicative?
+```{r question 4 figuring out Additive or Multiplicative for ets}
+arrest.dat[, trend:= rollmean(x = Rate, k = 12, fill=NA, align = "right")]
+
+arrest.dat[,`:=`(detrended_add = Rate - trend,  detrended_mult = Rate / trend )]
+
+arrest.dat[, yr_mon:= paste0(yr_mon,"-01")]
+arrest.dat$yr_mon = as.Date(arrest.dat$yr_mon)
+
+arrest.dat[,`:=`
+           (seasonal_add = mean(detrended_add, na.rm = TRUE),
+            seasonal_mult = mean(detrended_mult, na.rm = TRUE)), by=.(quarter(yr_mon))]
+
+arrest.dat[,`:=`
+           (residual_add = detrended_add - seasonal_add,
+            residual_mult = detrended_mult / seasonal_mult )]
+
+arrest.dat[,.(ts_type = compare_ssacf(residual_add, residual_mult))] # Multiplicative
+
+```
+
+What would be the best model?
+```{r question 4 finding the best model}
+# split the data into train and test:
+train = window(ts.dat, end = c(2014, 12))
+test = window(ts.dat, start = c(2015, 01))
+length(train)
+length(test)
+
+## Avg Method:
+average_model = meanf(train,h = 48)
+accuracy(average_model,x = ts.dat)
+
+## Naive Method:
+naive_model = naive(train,h=48)
+accuracy(naive_model,x = ts.dat)
+
+## Seasonal Naive Method:
+seasonal_naive_model = snaive(train,h=48)
+accuracy(seasonal_naive_model,x = ts.dat)
+
+## Plots 1:
+autoplot(train)+
+  autolayer(average_model,PI = F,size=1.1,series = 'Average Model')+
+  autolayer(naive_model,PI=F,size=1.1, series='Naive Model')+
+  autolayer(seasonal_naive_model,PI=F,size=1.1,series='Seasonal Naive Model')+
+  autolayer(test)
+
+## Drift Method:
+drift_model = rwf(train,h=48,drift = T)
+accuracy(drift_model,x = ts.dat)
+
+
+## Holt's Method with Damping:
+holt_damped_model = holt(train,h=48,damped = T)
+accuracy(holt_damped_model,x = ts.dat)
+
+## Holt-Winter's Seasonal Method with Multiplicative:
+hw_mult = hw(train,h=48,seasonal = 'multiplicative', damped=T)
+accuracy(hw_mult,x = ts.dat)
+
+## Plots 2:
+autoplot(train)+
+  autolayer(drift_model,PI=F,size=1.1,series='Drift Model')+
+  autolayer(holt_damped_model,series="Holt's Method with Damping",PI=F,size=1.1)+
+  autolayer(hw_mult,series="Holt Winter's Method - Multiplicative",PI=F)+
+  autolayer(test)
+
+
+model.types = c("MAM","ANA","MNM","MAM","MMM")
+ets.models = list()
+ets.forecast = list()
+for(i in seq(model.types)){
+  ets.models[[i]] = ets(train, model =  model.types[i])
+  summary(ets.models[[i]])
+  
+  ets.forecast[[i]] = forecast(ets.models[[i]],h=48)
+  
+  accuracy(ets.forecast[[i]],x = ts.dat)
+}
+
+
+## Exponential Smoothing Methods(ETS)-xxx and auto:
+ets_mmm = ets(train, model = 'MMM')
+summary(ets_mmm)
+
+ets_auto = ets(train)
+summary(ets_auto) # ANA
+
+ets_mmm_forecast = forecast(ets_mmm,h=48)
+ets_auto_forecast = forecast(ets_auto,h=48)
+
+accuracy(ets_mmm_forecast,x = ts.dat)
+accuracy(ets_auto_forecast,x = ts.dat) 
+
+## Plots 3:
+autoplot(train)+
+  autolayer(ets_mmm_forecast,size = 1.1, series="ETS - MMM",PI=F)+
+  autolayer(ets_auto_forecast,size = 1.1, series="ETS - AUTO",PI=F)+
+  autolayer(test)
+
+
+## ARIMA: 
+
+### Stablizing:
+train2 = BoxCox(train,lambda = BoxCox.lambda(train))
+optimal.lamda = BoxCox.lambda(train)
+kpss.test(train2) # Still non-staionary
+
+### Removing Seasonality:
+train2_no_seasonality = diff(x = train2,lag = 12)
+kpss.test(train2_no_seasonality) # Still non-staionary
+ndiffs(train2_no_seasonality) #1
+
+### Removing Trend:
+train2_no_season_no_trend = diff(train2_no_seasonality,1)
+autoplot(train2_no_season_no_trend)
+kpss.test(train2_no_season_no_trend) # Now stationary!!
+
+
+plot = 
+    cbind(
+      original = train,
+      const_var = train2,
+      no_seasonality = train2_no_seasonality,
+      no_seasonality_trend = train2_no_season_no_trend)
+
+autoplot(plot,facets=T,colour = T)+ylab('')+xlab('Year')+theme_bw()
+
+
+### Examine ACF and PACF to decide on AR (ARIMA(p,d,0) and/or MA terms (ARIMA(0,d,q))
+train2_no_season_no_trend %>%
+  diff(lag=12)%>%
+  diff(lag=1)%>%
+  ggtsdisplay()
+
+
+ggAcf(train2_no_season_no_trend, lag.max = 12*12)# First lag is NEGATIVE: MA model. That is, ARIMA(0, d, q)
+pacf(train2_no_season_no_trend, lag.max = 12*12)# bit gradually decrease than acf 
+
+
+### Try chose a model by selecing the min AICc:
+arima.model1 = Arima(y = train,order = c(0,1,2),seasonal = c(0,1,1),lambda = BoxCox.lambda(train))
+arima.model1
+
+ggtsdisplay(residuals(arima.model1))
+checkresiduals(arima.model1)## NOT FIT YET!
+
+autoplot(forecast(arima.model1,h = 48),PI=F)+
+  autolayer(test,size=1)
+
+### Alternative: 
+arima.model2 = Arima(y = train, order = c(0,1,1),seasonal = c(0,1,1),lambda = BoxCox.lambda(train))
+arima.model2
+
+ggtsdisplay(residuals(arima.model2))
+checkresiduals(arima.model2)## p > 0.05: FIT!!
+
+autoplot(forecast(arima.model2,h = 48),PI=F)+
+  autolayer(test,size=1)
+
+### AUTO:
+arima_auto = auto.arima(y = train, stepwise = F,approximation = F)
+arima_auto
+
+autoplot(forecast(arima_auto,h = 48),PI=F)+
+  autolayer(test,size=1)
+
+
+## Accuracy:
+arima.model1_forecast = forecast(arima.model1,h=48)
+arima.model2_forecast = forecast(arima.model2,h=48) 
+arima.auto_forecast = forecast(arima_auto, h= 48)
+### arima.model1 is better?
+
+accuracy(arima.model1_forecast,x = ts.dat) 
+accuracy(arima.model2_forecast,x = ts.dat) 
+accuracy(arima.auto_forecast,x = ts.dat) 
+
+
+## Plots 4:
+autoplot(train)+
+  autolayer(arima.model1_forecast,series="ARIMA - 1",PI=F, size = 1.1)+
+  autolayer(arima.model2_forecast,series="ARIMA - 2",PI=F, size = 1.1)+
+  autolayer(arima.auto_forecast,series="ARIMA - AUTO",PI=F, size = 1.1)+
+  autolayer(test)
+
+
+## Resulting Tab for the model accuracy
+reporting.tab = 
+  rbind(
+      average_model = accuracy(f = average_model,x = ts.dat)[2,],
+      naive_model = accuracy(f = naive_model,x = ts.dat)[2,],
+      seasonal_naive_model = accuracy(f = seasonal_naive_model,x = ts.dat)[2,],
+      drift_model = accuracy(f = drift_model, x = ts.dat)[2,],
+      holt_damped_model = accuracy(f = holt_damped_model,x = ts.dat)[2,],
+      hw_mult = accuracy(f = hw_mult, x = ts.dat)[2,],
+      ets_mmm = accuracy(ets_mmm_forecast, x = ts.dat)[2,],
+      ets_auto = accuracy(ets_auto_forecast, x = ts.dat)[2,],
+      arima.model1 = accuracy(arima.model1_forecast, x = ts.dat)[2,],
+      arima.model2 = accuracy(arima.model1_forecast, x = ts.dat)[2,],
+      arima.auto = accuracy(arima.auto_forecast,x=ts.dat)[2,]
+      )
+
+datatable(reporting.tab[,c("RMSE", 'ME', 'MPE')], class = 'cell-border stripe')
+
+```
+
+Forecasting, in general, is difficult, especially when the outcome is expected to be influenced by unexpected variables, such as death or crime. Hence, to select a model, I generated various models. And, based on the AIC, RMSE, ME, and MPE of the multiple models, I would utilize the ARIMA(0,1,1)(0,1,1)[12] model.
+The analysis is based on the arrest rate that is calculated with the uniformed total population across the year. As the above analysis shows, this tends to ignore the difference among the districts, race, age group, borough, crime types and such. To improve, I would incorporate the variables that could explain the characteristics of each district, race, age group, borough, and crime types. 
+As an evaluation, I would pay attention to RMSE, ME, and MPE more because large errors are undesirable in terms of forecasting, and ME and MPE allow for the bias check.
+
+

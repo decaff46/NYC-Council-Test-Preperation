@@ -1,0 +1,757 @@
+---
+title: "NYC Council Data Science Test - Short Answer"
+author: "Caffrey Lee"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: paper
+    highlight: zenburn
+    toc: true
+    toc_depth: 6
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+---
+
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  # cache = TRUE, 
+  # cache.lazy = FALSE, 
+  echo = T, 
+  comment="", warning = FALSE, message = FALSE, tidy.opts=list(width.cutoff=60), tidy = TRUE)
+
+DT.extensions = c('Responsive', 
+                  'Scroller', 
+                  'KeyTable', 
+                  'Buttons',
+                  'FixedHeader')
+options(DT.options = list(
+                paging=T,
+                fixedHeader=TRUE,
+                # scrollX='400px', 
+                scroller = TRUE,
+                scrollY = 450,
+                # scrollCollapse =TRUE, 
+                dom = 'Bfrtip',
+                buttons = I('colvis'),
+                pageLength=3,
+                keys = TRUE
+                )
+        )
+```
+
+```{r libraries, include=FALSE}
+library(prettydoc)
+library(data.table)
+library(DT)
+library(ggplot2)
+library(scales)
+library(xts)
+library(zoo)
+library(forecast)
+library(tseries)
+library(formulaic)
+#library(ggseas)
+library(ggthemes)
+#library(ggmap)
+library(stddiff)
+```
+
+```{r load data, include = F}
+dat = fread("NYC_Interveiw_data.csv")
+pop = fread('New_York_City_Population_by_Borough__1950_-_2040.csv') # this is modified version and use the uniformed total population of 2010 for across the year. 
+setnames(pop, old = c('V1', 'V2'), new = c('arrest_boro', '2010_ pop'))
+pop[, total:= sum(`2010_ pop`)]
+
+```
+
+```{r functions, include = F}
+
+basic.stat <- function(dat){
+  print(hist(dat))
+  quantile(dat)
+}
+
+length.unique <- function(dat, value.name, by = NA){
+  require(data.table)
+  this.dat <- setDT(x = dat)
+  
+  if(length(by) > 0){
+    if(!is.na(by[1])){
+      if(by[1] == ""){
+        by[1] <- NA
+      }
+    }
+  }
+  
+  if(is.na(by[1])){
+    dat.u <- unique(this.dat, by = value.name)
+    ans <- dat.u[, .(N = .N)]
+  }
+  if(!is.na(by[1])){
+    dat.u <- unique(this.dat, by = c(by, value.name))
+    ans <- dat.u[, .N, by = by]
+  }
+  return(ans)
+}
+
+
+round.numerics <- function(x, digits = 3){
+  if(is.numeric(x)){
+    x <- round(x = x, digits = digits)
+  }
+  return(x)
+}
+
+create.histogram <- function(dat, title, show.labels = T)
+{
+  if(show.labels == T){
+    ggplot(data = dat, aes(x = yr, y = perc)) +
+    geom_bar(stat = 'identity', aes(fill = target), colour = 'black', width = 0.6)+
+    facet_wrap(~ target) +
+    scale_fill_brewer(palette = "Spectral") +
+    geom_text(aes(label = paste0(perc*100," %")), vjust = -0.5,  size = 4) +
+    theme(legend.position = "top") +
+    xlab("Year") +
+    ylab("The rates") +
+    ggtitle(sprintf("Arrest Rates by %s", title))
+  } else {
+    ggplot(data = dat, aes(x = yr, y = perc)) +
+    geom_bar(stat = 'identity', aes(fill = target), colour = 'black', width = 0.6)+
+    facet_wrap(~ target) +
+    scale_fill_brewer(palette = "Spectral") +
+    theme(legend.position = "top") +
+    xlab("Year") +
+    ylab("The rates") +
+    ggtitle(sprintf("Arrest Rates by %s", title))
+  }
+}
+
+create.slop.chart <- function(dat, title){
+  theme_set(theme_classic())
+  
+  dat.2015 = dat[yr == min(dat$yr),] 
+  dat.2018 = dat[yr == max(dat$yr),]
+  dat.condensed = merge(dat.2015[, c(2,5)], dat.2018[, c(2,5)], by = 'target')
+  setnames(dat.condensed, old = c('perc.x', 'perc.y'), new = c(as.character(min(dat$yr)), as.character(max(dat$yr))))
+  
+  left= paste(min(dat$yr), dat.condensed$target,paste0( (dat.condensed$`2015`)*100, " %"), sep= ', ')
+  right= paste(max(dat$yr), dat.condensed$target,paste0( (dat.condensed$`2018`)*100, " %"), sep= ', ')
+
+  dat.condensed$class = ifelse((dat.condensed$`2015` - dat.condensed$`2018`) < 0, 'green', 'red')
+
+
+  plot = 
+    ggplot(dat.condensed) + geom_segment(aes(x=1, xend=2, y= `2015`, yend=`2018`, col= class), size=.75, show.legend=F) + 
+                  geom_vline(xintercept=1, linetype="dashed", size=.1) + 
+                  geom_vline(xintercept=2, linetype="dashed", size=.1) +
+                  scale_color_manual(labels = c("Up", "Down"), 
+                                     values = c("green"="#00ba38", "red"="#f8766d")) +  
+                  labs(x="", y=sprintf("Rate by %s", title)) + 
+    xlim(.5, 2.5)
+
+  
+  # Add texts
+  plot = plot + geom_text(label=left, y= dat.condensed$`2015`, x=rep(1, NROW(dat.condensed)), hjust=1.1, size=3.5)
+  plot = plot + geom_text(label=right, y= dat.condensed$`2018`, x=rep(2, NROW(dat.condensed)), hjust=-.1, size=3.5)
+
+  plot = plot + geom_text(label="Beginning", x=1, y=1.1*(max(dat.condensed$`2015`, dat.condensed$`2018`)), hjust=1.2, size=3) 
+  
+  plot = plot + geom_text(label="Ending", x=1, y=1.1*(max(dat.condensed$`2015`, dat.condensed$`2018`)), hjust=1.2, size=3) 
+  
+  plot + theme(panel.background = element_blank(), 
+           panel.grid = element_blank(),
+           axis.ticks = element_blank(),
+           axis.text.x = element_blank(),
+           panel.border = element_blank(),
+           plot.margin = unit(c(1,2,1,2), "cm"))
+  print(plot)
+}
+
+ssacf <- function(x){
+  sum(acf(x, na.action = na.omit)$acf^2)
+}# reference: https://www.r-bloggers.com/is-my-time-series-additive-or-multiplicative/
+
+
+compare_ssacf <-function(add,mult){
+  ifelse(ssacf(add) < ssacf(mult), "Additive", "Multiplicative")
+}
+# reference: https://www.r-bloggers.com/is-my-time-series-additive-or-multiplicative/
+
+my.format <- function(x, big.mark = ","){
+  return(format(x = x, big.mark = big.mark))
+}
+```
+
+```{r data prep, include=F}
+dat$arrest_date = as.Date(dat$arrest_date, format = "%Y-%m-%d")
+
+```
+
+# Introduction 
+
+*The purpose of this document is for the NYC Council Data Science Interview. It is done by Caffrey Lee solely.*
+
+This document only contains a brief description of the data, analysis, and the answers for the 4 questions. For detailed analysis and the code, please see the corresponding files that I submit it along with the file.
+
+
+# Data
+The given data has *4798339 obs. of 18 variable*. But, it has some issues: 
+
+  * *arrest_date is not in a date format;*
+  * *missing values;* 
+  * *non-descriptive factors in categorical variables;*
+  * *too many categories for a single feature;*
+  
+After cleaning the data, the final data that I utilized for the analysis has *4789450 of observations with 20 columns* with a missing rate of *0%*. In short, the following analysis is based on the *99.81%* of the given data.
+
+# Data Preparation
+## Missing values:
+The missing rows were filled up with NA for all columns, leading me to simply drop them. Also, the missing rates of the given data were not critical, **0.19%**.
+
+## Cleaning
+* *AREREST_BORO* has 6 unique factors: B, K, M, Q, S, and " ". And, there were only 8 cases. So, I simply dropped them. 
+* *PERP_RACE* has 8 categories with UNKNOWN AND OTHERS. I prefer not to have unknown, especially when there is a category called "Other". So, I put them together. 
+(Note: one may think that this may not be a good idea, I agree) 
+* *AGE_GROUP* has 2000, 378, and other numbers that are not descriptive at all. Those non-descriptive numbers were recategorized into *UNKNOWN*
+* *yr* and *yr_mon* were introduced for the analysis 
+
+
+# Assumption 
+
+The analysis is based on the following assumptions:
+
++ Assumptions: 
+  - I assume that the population does *not* fluctuate across time. (This is confirmed with the 2018 NYC population data from Statista: the total population is 8,398,748 when `r my.format(8242624)` is the total population that I used across the year; reference: https://www.statista.com/statistics/799563/resident-population-of-nyc-by-race/)
+  - For simplicity, I *ignore* the traits of the neighbors such as the proportion of each ethnicity, social environment, economic status, and such.
+  - I presume that every case is *independent*. This also excludes multiple crime, arrest, cases of a single person. 
+  - Consecutive observations are *equally spaced*
+  - Apply a *discrete-time* index, yearly, (even though this may only hold approximately) 
+
+# Analysis & Answer
+## <font size="4">Has the arrest rate been decreasing from 2015-2018? Describe the trend and defend any statistical tests used to support this conclusion.</font>
+ 
+**Note: Generally speaking, *arrest rate* is calculated as *Numb. Of Arrest (Types) / (Total) Population*. In the question, the definition of the arrest rate is a bit abstract. The rate could be based on the population*(uniformed)* or other variables such as race, age, borough, sex, arrest types, and such. Hence, I utilized the above-mentioned variables to calculate the arrest rate of each case by year as well as the total population to compute the overall arrest rate.**
+
+
+The overall arrest rate throughout the time shows the **decreasing trend** (Feature 1,2); however, the arrest rate of race, gender, age group, borough, and the top 5 arrest types shows the different results (Feature 3,4): arrest rates of race, borough, and gender do not change much, while the top 5 arrest types and age group display distinctive changes. 
+
+The result of the multivariate linear regression also states that the arrest rates are **decreasing** across the time, holding the above-mentioned variable fixed. Controlling for other variables, one year increase in a year would decrease the arrest rate by **-8.014e-07** on average.
+
+
+## <font size="4"> What are the top 5 most frequent arrests as described in the column 'pd_desc' in 2018? Compare & describe the overall trends of these arrests across time.</font>
+
+**Note: Here, the question asked about the frequency, which I take it as the number of occurrences, instead of rate. That is, the following analysis is based on the *absolute number* rather than the rate, calculated by frequency/population**
+
+The most frequent pd_desc types in 2018 are **Assult 3, Larceny Petit From Open Areas, Traffic, Assault 2&1, and Controlled Substance**. (please see Table 1 in the appendix) 
+
+Regarding the overall trend of the top 5 arrests, one could say that the trend is **moving from increasing to decreasing starting from 2014 and that there is a high seasonality** as the feature 5 shows. 
+Yet, looking at the trend for each type, one could see that the arrest frequency varies across the year:
+
+the arrest frequency of Assault 3 has been varied between 29% and 43%, even though it accounts for the biggest portion of the arrests across the year, from 2009 to 2018. The frequency of another type of Assault, 2&1, does not show much fluctuation. Still, one could see that since 2012, it is not listed on the top 3 anymore. 
+Lastly, December is the month that has the lowest arrest rates throughout the years, when May has the highest. 
+
+Still, one could say that the **frequency** of those top 5 types is **increased** due to the fact that the *mean of the overall number of arrests of those types is increased* compared to that of the beginning year. This could be supported by the Feature 6: Linear Regression.
+
+
+## <font size="4"> If we think of arrests as a sample of total crime, is there more crime in precinct 19 (Upper East Side) than precinct 73 (Brownsville)?  Describe the trend, variability and justify any statistical tests used to support this conclusion. </font>
+
+**Note: The question mentioned that the data, sample, could represent the total crime. That is, it is a representative sample that allows me to draw a conclusion of the population based on the analysis of the sample with confidence. Say that, number of arrests can represent the crime rates. With that in mind, the analysis is conducted. Also, I calculated the *monthly mean of arrests* of each precinct across the year, then take the *difference* between them. Here, I took the mean difference to alleviate the difference between the two districts as well as the difference across the time.**
+
+Based on the *monthly mean of arrests*, one can say that Precinct 73 has a **greater average amount of crime** than precinct 19 across the time on average(Feature 7).
+Yet, to answer this question, one should be careful since the analysis disregard the demographic difference between the two communities. To confirm, I ran a linear regression (Feature 8). 
+
+Based on the P-val of the precinct, one could say that the **location** does **not** have a statistical impact on the mean of crime controlling the year fixed. In contrast, the year has a statistical impact on the monthly mean number of arrests. 
+
+Regarding the trend, one could say that it is **moving from increasing to decreasing trend from 2011 with seasonality**. This happens mostly because the crime rates in precinct 73 are decreasing. For instance, after reaching the peak rate, 43.87%, in 2011-07, it gradually decreases. And, the rate remains around 13% since 2018-08 (Feature 9). 
+
+*Further research on the characteristics of each neighborhood such as ethnicity, environment, economic status, and such could help one to have a better understanding of the crime rates.*
+
+
+## <font size="4"> What model would you build to predict crime to better allocate NYPD resources? What challenges do you foresee? What variables would be included? How would you evaluate the model? Discuss in no more than 150 words.</font>
+
+Forecasting, in general, is difficult, especially when the outcome is expected to be influenced by unexpected variables, such as death or crime. Hence, to select a model, I generated various models. And, based on the AIC, RMSE, ME, and MPE of the multiple models, I would utilize the *ARIMA(0,1,1)(0,1,1)[12]* model to forecast crime.
+
+The analysis is based on the arrest rate that is calculated with the uniformed total population across the year. As the above analysis shows, this tends to ignore the difference among the districts, race, age group, borough, crime types and such. To improve, I would incorporate the variables that could explain the characteristics of each district, race, age group, borough, and crime types. 
+
+As an evaluation, I would pay attention to *RMSE, ME, and MPE* more because large errors are undesirable in terms of forecasting, and ME and MPE allow for the bias check.
+
+
+
+# Appendix
+## Question 1. 
+```{r question 1 appendix}
+total.pop = unique(pop$total)
+# making sure that dates are ascending order 
+setorderv(x = dat, cols = 'arrest_date', order = 1)
+
+arrest.dat = dat[, .N, by = c('yr_mon')]
+arrest.dat = arrest.dat[, .(Rate = (N/total.pop)*100), by = yr_mon]
+
+# creating the ts dat
+ts.dat = ts(data = arrest.dat[,-1], start = c(2006,1), end = c(2018,12), frequency = 12)
+
+# parsing only 2015 to 2018
+ts.dat.window = window(ts.dat, 2015, c(2018,12))
+
+#time(ts.dat.window)
+#cycle(ts.dat.window)
+#cor(ts.dat.window, lag(ts.dat.window), use = 'complete.obs')
+
+#autoplot(ts.dat.window, facet = T)+ ylab('Overall Arrest Rate')
+
+# STL (Seasonality and Trend Decomposition using Loess)
+autoplot(stl(ts.dat.window[,1], s.window = 'periodic', robust = T), main = "Feature 1. STL plot")
+
+#ggAcf(ts.dat.window, lag.max = 12*4)
+#pacf(ts.dat.window)
+
+# Chekcing for the seaonality
+ggseasonplot(ts.dat.window, year.labels = TRUE, year.labels.left = TRUE) +
+  ylab("Arrest Rate") +
+  xlab("Month") +
+  ggtitle("Feature 2: Overall Arrest Rate") # Weak Seaonality
+
+# Variation by the month
+#ggsubseriesplot(ts.dat.window) +
+#  ylab("Arrest Rate") +
+#  xlab("Month") +
+#  ggtitle("Sub Seasonal Plot: Overall Arrest Rate")
+
+
+boxplot(ts.dat.window~cycle(ts.dat.window), xlab = 'Months', ylab = 'Overall Arrest Rate', main = "Feature 2.")
+
+
+# Race
+rate.by.race = dat[yr >= 2015, .N, by = c('yr','perp_race')]
+rate.by.race[, rate := round((N / total.pop)*100, digits = 2), by = yr]
+rate.by.race[, perc := round(rate / sum(rate), digits = 2), by = yr]
+setorderv(rate.by.race, cols = c('yr', 'perp_race'), order = c(-1,1))
+setnames(x = rate.by.race, old = 'perp_race', new = 'target')
+
+create.slop.chart(dat = rate.by.race, title = 'Race, Feature 3')
+
+# age
+rate.by.age = dat[yr >= 2015, .N, by = c('yr','age_group')]
+rate.by.age[, rate := round((N / total.pop)*100, digits = 2), by = yr]
+rate.by.age[, perc := round(rate / sum(rate), digits = 2), by = yr]
+setorderv(rate.by.age, cols = c('yr', 'age_group'), order = c(-1,1))
+setnames(x = rate.by.age, old = 'age_group', new = 'target')
+
+create.slop.chart(rate.by.age, 'Age, Feature 3')
+
+# borough
+rate.by.borough = dat[yr >= 2015, .N, by = c('yr','arrest_boro')]
+rate.by.borough[, rate := round((N / total.pop)*100, digits = 2), by = yr]
+rate.by.borough[, perc := round(rate / sum(rate), digits = 2), by = yr]
+setorderv(rate.by.borough, cols = c('yr', 'arrest_boro'), order = c(-1,1))
+setnames(x = rate.by.borough, old = 'arrest_boro', new = 'target')
+
+create.slop.chart(dat = rate.by.borough, 'Borough, Feature 3')
+
+# sex
+rate.by.sex = dat[yr >= 2015, .N, by = c('yr','perp_sex')]
+rate.by.sex[, rate := round((N / total.pop)*100, digits = 2), by = yr]
+rate.by.sex[, perc := round(rate / sum(rate), digits = 2), by = yr]
+setorderv(rate.by.sex, cols = c('yr', 'perp_sex'), order = c(-1,1))
+setnames(x = rate.by.sex, old = 'perp_sex', new = 'target')
+
+create.slop.chart(dat = rate.by.sex, 'Gender, Feature 3')
+
+# offense description
+rate.by.ofns_desc = dat[yr >= 2015, .N, by = c('yr','ofns_desc')]
+rate.by.ofns_desc[, rate := round((N / total.pop)*100, digits = 2), by = yr]
+rate.by.ofns_desc[, perc := round(rate / sum(rate), digits = 2), by = yr]
+setorderv(rate.by.ofns_desc, cols = c('yr', 'perc'), order = c(-1,-1))
+setnames(x = rate.by.ofns_desc, old = 'ofns_desc', new = 'target')
+
+# take the top 5
+rate.by.ofns_desc.top5 = rate.by.ofns_desc[, .SD[1:5] , by = yr]
+
+
+create.slop.chart(dat = rate.by.ofns_desc.top5, 'Top5 Types, Feature 3')
+
+# by race
+create.histogram(dat = rate.by.race, title = 'Race, Feature 4')
+
+# by age
+create.histogram(dat = rate.by.age, title = 'Age, Feature 4')
+
+# by borough
+create.histogram(dat = rate.by.borough, title = 'Borough, Feature 4')
+
+# by sex
+create.histogram(dat = rate.by.sex, title = 'Gender, Feature 4')
+
+# by ofns_desc
+create.histogram(dat = rate.by.ofns_desc.top5, title = 'Top5 Types, Feature 4')
+
+rm(rate.by.age)
+rm(rate.by.borough)
+rm(rate.by.ofns_desc)
+rm(rate.by.race)
+rm(rate.by.sex)
+
+
+q1.dat = dat[yr >=2015 & ofns_desc %in% unique(rate.by.ofns_desc.top5$target), .N, by = c('arrest_date', 'age_group', 'perp_race', 'perp_sex', 'arrest_boro', 'ofns_desc', 'yr', 'yr_mon')] 
+
+rm(rate.by.ofns_desc.top5)
+
+q1.dat[, Rate:= (N/total.pop)*100, by = yr]
+
+formula = create.formula(outcome.name = 'Rate', input.names = c('age_group', 'perp_race', 'perp_sex', 'arrest_boro', 'ofns_desc', 'yr'), dat = q1.dat, max.input.categories = 7, reduce = T)
+
+lm = lm(formula = formula, data = q1.dat)
+summary(lm)
+rm(q1.dat)
+```
+
+
+## Question 2. 
+```{r question 2 appendix}
+pd_desc.num = length(unique(dat$pd_desc))
+pd_desc.uniq = unique(dat$pd_desc)
+
+tab = dat[yr == 2018, .N, by = pd_desc][order(-N)]
+tab[, perc := round(N / sum(N) *100, digits = 2)]
+
+datatable(tab[1:5], rownames = F, caption = 'Table 1.')
+
+top.5.pd_desc = tab[, pd_desc][1:5]
+
+# parsing the top 5 from the overall data
+comparison.tab = dat[pd_desc %in% top.5.pd_desc, .N, by = c('yr','pd_desc')]
+
+comparison.tab[, perc := round(N / sum(N), digits = 2), by = yr]
+setorderv(comparison.tab, cols = c('yr', 'perc'), order = c(-1,-1))
+comparison.tab[, rank:= 1:.N, by = yr]
+comparison.tab[, diff:= rank - shift(rank), by = pd_desc]
+datatable(comparison.tab, rownames = F, caption = 'Table 1-1.')
+
+setnames(x = comparison.tab, old = 'pd_desc', new = 'target')
+
+create.histogram(dat = comparison.tab, title = 'Top 5 Types, Feature 5', show.labels = F)
+
+## overal time series
+top.5.dat = dat[pd_desc %in% top.5.pd_desc, .N, by = c( 'yr_mon')]
+#top.5.dat = top.5.dat[, mean:= mean(N), by = c('yr_mon')]
+
+top.ts = ts(data = top.5.dat[,-1], start = c(2006,1), end = c(2018,12), frequency = 12)
+
+autoplot(top.ts, facet = T, main = 'Feature 6')+ ylab('Numb. of Arrest of Top 5')
+
+#ggAcf(x = top.ts, lag.max = 12*12)
+#pacf(top.ts)
+# it is highly auto-correlated with the adjecent year and the year before with high seasonality
+
+# STL (Seasonality and Trend Decomposition using Loess)
+autoplot(stl(top.ts[,1], s.window = 'periodic', robust = T), main = 'Feature 6. STL plot')
+
+
+# Chekcing for the seaonality
+ggseasonplot(top.ts, year.labels = TRUE, year.labels.left = TRUE) +
+  ylab("Numb. of Top 5 Arrests") +
+  xlab("Month") +
+  ggtitle("Feature 6: Top 5 Arrests") 
+
+# Variation by the month
+#ggsubseriesplot(top.ts) +
+#  ylab("Numb. of Top 5 Arrests") +
+#  xlab("Month") +
+#  ggtitle("Sub Seasonal Plot: Top 5 Arrests")
+
+boxplot(top.ts~cycle(top.ts), xlab = 'Months', ylab = 'Numb. of Top 5 Arrests', main= 'Feature 6')
+
+q2.dat = dat[pd_desc %in% top.5.pd_desc, .N, by = c('yr','pd_desc', 'arrest_date', 'yr_mon')]
+
+q2.dat[, mean:= mean(N), by = yr_mon]
+
+#formula2 = create.formula(outcome.name = 'mean', input.names = c('yr', 'pd_desc'), dat = q2.dat)
+
+#lm2 = lm(formula = formula2, data = q2.dat)
+#summary(lm2)
+
+ggplot(q2.dat, aes(x = yr, y = mean)) + 
+  geom_point() +
+  stat_smooth(method = "lm", col = "red") +
+  ggtitle("Feature 6: Linear Regression")
+
+rm(q2.dat)
+```
+
+## Question 3.
+```{r question 3 appendix}
+# parsing 19
+tab.19 = dat[arrest_precinct == 19, .N, by = c('arrest_date','arrest_precinct', 'yr_mon')]
+# compute the arrest rate by mean of month
+tab.19 = tab.19[, mean(N), by= yr_mon]
+setnames(x = tab.19, old = 'V1', new = '19')
+
+# parsing 73
+tab.73 = dat[arrest_precinct == 73, .N, by = c('arrest_date','arrest_precinct','yr_mon')]
+# compute the arrest rate by mean of month
+tab.73 = tab.73[, mean(N), by= yr_mon]
+setnames(x = tab.73, old = 'V1', new = '73')
+
+tab.19.73 = merge(tab.19, tab.73, by = 'yr_mon')
+
+#basic.stat(tab.19.73$`19`)
+#basic.stat(tab.19.73$`73`)
+#cor(tab.19.73$`19`, tab.19.73$`73`)
+
+tab.19.73[, mean_diff := `73` - `19`, by = yr_mon]
+
+ggplot(tab.19.73, aes(x=as.Date(paste0(yr_mon,"-01")), y=mean_diff)) +
+  geom_line(color = '#69b3a2')+
+  xlab("") +
+  ylab("Difference over the time (73 - 19)")+
+  ggtitle("Feature 7") +
+  scale_x_date(date_breaks = "6 month", date_labels = "%y")
+
+q3.dat = dat[arrest_precinct == 19 | arrest_precinct == 73, .N, by = c('yr', 'arrest_date', 'yr_mon', 'arrest_precinct')]
+
+q3.dat[, mean := mean(N), by = yr_mon]
+q3.dat$arrest_precinct = as.factor(q3.dat$arrest_precinct)
+
+formula3 = create.formula(outcome.name = 'mean', input.names = c('yr', 'arrest_precinct'), dat = q3.dat)
+
+lm3 = lm(formula = formula3, data = q3.dat)
+summary(lm3)
+
+ggplot(q3.dat, aes(x = yr, y = mean)) + 
+  geom_point() +
+  ggtitle("Feature 8") +
+  stat_smooth(method = "lm", col = "red")
+rm(q3.dat)
+
+ggplot(tab.19.73, aes(x=as.Date(paste0(yr_mon,"-01")), y=`73`)) +
+  geom_line(color = 'red')+
+  xlab("") +
+  ylab("Mean Crimes of '73'")+
+  ggtitle("Feature 9")+
+  scale_x_date(date_breaks = "6 month", date_labels = "%y")
+
+final.tab = tab.19.73[, c(1,4)]
+
+ts.dat = ts(data = final.tab[,-1], start = c(2006,1), end = c(2018,12), frequency = 12)
+
+plot.ts(ts.dat, type= "b", main = "Mean Difference Over Time", xlab = "Years", ylab = "Difference btw the Precincts", col = '#69b3a2', pch = "*") 
+
+# STL (Seasonality and Trend Decomposition using Loess)
+autoplot(stl(ts.dat[,1], s.window = 'periodic'))
+
+# Chekcing for the seaonality
+ggseasonplot(ts.dat, year.labels = TRUE, year.labels.left = TRUE) +
+  ylab("Difference btw the Precincts") +
+  xlab("") +
+  ggtitle("Seasonal Plot: Difference Over Time") # Weak Seaonality
+
+# Variation by the month
+ggsubseriesplot(ts.dat) +
+  ylab("Difference btw the Precincts") +
+  xlab("") +
+  ggtitle("Sub Seasonal Plot: Difference Over Time")
+
+boxplot(ts.dat~cycle(ts.dat), xlab = 'Months', ylab = 'Difference btw the Precincts')
+
+q3.dat = dat[arrest_precinct == 19 | arrest_precinct == 73, .N, by = c('yr', 'arrest_date', 'yr_mon', 'arrest_precinct')]
+
+q3.dat[, mean := mean(N), by = yr_mon]
+q3.dat$arrest_precinct = as.factor(q3.dat$arrest_precinct)
+
+formula3 = create.formula(outcome.name = 'mean', input.names = c('yr', 'arrest_precinct'), dat = q3.dat)
+
+lm3 = lm(formula = formula3, data = q3.dat)
+summary(lm3)
+
+ggplot(q3.dat, aes(x = yr, y = mean)) + 
+  geom_point() +
+  stat_smooth(method = "lm", col = "red")
+rm(q3.dat)
+```
+
+## Question 4.
+```{r question 4 appendix}
+train = window(ts.dat, end = c(2014, 12))
+test = window(ts.dat, start = c(2015, 01))
+length(train)
+length(test)
+
+## Avg Method:
+average_model = meanf(train,h = 48)
+accuracy(average_model,x = ts.dat)
+
+## Naive Method:
+naive_model = naive(train,h=48)
+accuracy(naive_model,x = ts.dat)
+
+## Seasonal Naive Method:
+seasonal_naive_model = snaive(train,h=48)
+accuracy(seasonal_naive_model,x = ts.dat)
+
+## Plots 1:
+autoplot(train)+
+  autolayer(average_model,PI = F,size=1.1,series = 'Average Model')+
+  autolayer(naive_model,PI=F,size=1.1, series='Naive Model')+
+  autolayer(seasonal_naive_model,PI=F,size=1.1,series='Seasonal Naive Model')+
+  autolayer(test)
+
+## Drift Method:
+drift_model = rwf(train,h=48,drift = T)
+accuracy(drift_model,x = ts.dat)
+
+
+## Holt's Method with Damping:
+holt_damped_model = holt(train,h=48,damped = T)
+accuracy(holt_damped_model,x = ts.dat)
+
+## Holt-Winter's Seasonal Method with Multiplicative:
+hw_mult = hw(train,h=48,seasonal = 'multiplicative', damped=T)
+accuracy(hw_mult,x = ts.dat)
+
+## Plots 2:
+autoplot(train)+
+  autolayer(drift_model,PI=F,size=1.1,series='Drift Model')+
+  autolayer(holt_damped_model,series="Holt's Method with Damping",PI=F,size=1.1)+
+  autolayer(hw_mult,series="Holt Winter's Method - Multiplicative",PI=F)+
+  autolayer(test)
+
+
+model.types = c("MAM","ANA","MNM","MAM","MMM")
+ets.models = list()
+ets.forecast = list()
+for(i in seq(model.types)){
+  ets.models[[i]] = ets(train, model =  model.types[i])
+  summary(ets.models[[i]])
+  
+  ets.forecast[[i]] = forecast(ets.models[[i]],h=48)
+  
+  accuracy(ets.forecast[[i]],x = ts.dat)
+}
+
+
+## Exponential Smoothing Methods(ETS)-xxx and auto:
+ets_mmm = ets(train, model = 'MMM')
+summary(ets_mmm)
+
+ets_auto = ets(train)
+summary(ets_auto) # ANA
+
+ets_mmm_forecast = forecast(ets_mmm,h=48)
+ets_auto_forecast = forecast(ets_auto,h=48)
+
+accuracy(ets_mmm_forecast,x = ts.dat)
+accuracy(ets_auto_forecast,x = ts.dat) 
+
+## Plots 3:
+autoplot(train)+
+  autolayer(ets_mmm_forecast,size = 1.1, series="ETS - MMM",PI=F)+
+  autolayer(ets_auto_forecast,size = 1.1, series="ETS - AUTO",PI=F)+
+  autolayer(test)
+
+
+## ARIMA: 
+
+### Stablizing:
+train2 = BoxCox(train,lambda = BoxCox.lambda(train))
+optimal.lamda = BoxCox.lambda(train)
+kpss.test(train2) # Still non-staionary
+
+### Removing Seasonality:
+train2_no_seasonality = diff(x = train2,lag = 12)
+kpss.test(train2_no_seasonality) # Still non-staionary
+ndiffs(train2_no_seasonality) #1
+
+### Removing Trend:
+train2_no_season_no_trend = diff(train2_no_seasonality,1)
+autoplot(train2_no_season_no_trend)
+kpss.test(train2_no_season_no_trend) # Now stationary!!
+
+
+plot = 
+    cbind(
+      original = train,
+      const_var = train2,
+      no_seasonality = train2_no_seasonality,
+      no_seasonality_trend = train2_no_season_no_trend)
+
+autoplot(plot,facets=T,colour = T)+ylab('')+xlab('Year')+theme_bw()
+
+
+### Examine ACF and PACF to decide on AR (ARIMA(p,d,0) and/or MA terms (ARIMA(0,d,q))
+train2_no_season_no_trend %>%
+  diff(lag=12)%>%
+  diff(lag=1)%>%
+  ggtsdisplay()
+
+
+ggAcf(train2_no_season_no_trend, lag.max = 12*12)# First lag is NEGATIVE: MA model. That is, ARIMA(0, d, q)
+pacf(train2_no_season_no_trend, lag.max = 12*12)# bit gradually decrease than acf 
+
+
+### Try chose a model by selecing the min AICc:
+arima.model1 = Arima(y = train,order = c(0,1,2),seasonal = c(0,1,1),lambda = BoxCox.lambda(train))
+arima.model1
+
+ggtsdisplay(residuals(arima.model1))
+checkresiduals(arima.model1)## NOT FIT YET!
+
+autoplot(forecast(arima.model1,h = 48),PI=F)+
+  autolayer(test,size=1)
+
+### Alternative: 
+arima.model2 = Arima(y = train, order = c(0,1,1),seasonal = c(0,1,1),lambda = BoxCox.lambda(train))
+arima.model2
+
+ggtsdisplay(residuals(arima.model2))
+checkresiduals(arima.model2)## p > 0.05: FIT!!
+
+autoplot(forecast(arima.model2,h = 48),PI=F)+
+  autolayer(test,size=1)
+
+### AUTO:
+arima_auto = auto.arima(y = train, stepwise = F,approximation = F)
+arima_auto
+
+autoplot(forecast(arima_auto,h = 48),PI=F)+
+  autolayer(test,size=1)
+
+
+## Accuracy:
+arima.model1_forecast = forecast(arima.model1,h=48)
+arima.model2_forecast = forecast(arima.model2,h=48) 
+arima.auto_forecast = forecast(arima_auto, h= 48)
+### arima.model1 is better?
+
+accuracy(arima.model1_forecast,x = ts.dat) 
+accuracy(arima.model2_forecast,x = ts.dat) 
+accuracy(arima.auto_forecast,x = ts.dat) 
+
+
+## Plots 4:
+autoplot(train)+
+  autolayer(arima.model1_forecast,series="ARIMA - 1",PI=F, size = 1.1)+
+  autolayer(arima.model2_forecast,series="ARIMA - 2",PI=F, size = 1.1)+
+  autolayer(arima.auto_forecast,series="ARIMA - AUTO",PI=F, size = 1.1)+
+  autolayer(test)
+
+
+## Resulting Tab for the model accuracy
+reporting.tab = 
+  rbind(
+      average_model = accuracy(f = average_model,x = ts.dat)[2,],
+      naive_model = accuracy(f = naive_model,x = ts.dat)[2,],
+      seasonal_naive_model = accuracy(f = seasonal_naive_model,x = ts.dat)[2,],
+      drift_model = accuracy(f = drift_model, x = ts.dat)[2,],
+      holt_damped_model = accuracy(f = holt_damped_model,x = ts.dat)[2,],
+      hw_mult = accuracy(f = hw_mult, x = ts.dat)[2,],
+      ets_mmm = accuracy(ets_mmm_forecast, x = ts.dat)[2,],
+      ets_auto = accuracy(ets_auto_forecast, x = ts.dat)[2,],
+      arima.model1 = accuracy(arima.model1_forecast, x = ts.dat)[2,],
+      arima.model2 = accuracy(arima.model1_forecast, x = ts.dat)[2,],
+      arima.auto = accuracy(arima.auto_forecast,x=ts.dat)[2,]
+      )
+
+datatable(reporting.tab[,c("RMSE", 'ME', 'MPE')], class = 'cell-border stripe', caption = 'Table 11.')
+```
