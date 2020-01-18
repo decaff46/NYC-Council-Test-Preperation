@@ -197,14 +197,14 @@ This document only contains a brief description of the data, analysis, and the a
 
 
 # Data
-The given data has *4798339 obs. of 18 variable*. But, it has some issues: 
+The given data has *4798339 obs. of 18 variable*. And, it has some issues: 
 
   * *arrest_date is not in a date format;*
   * *missing values;* 
   * *non-descriptive factors in categorical variables;*
   * *too many categories for a single feature;*
   
-After cleaning the data, the final data that I utilized for the analysis has *4789450 of observations with 20 columns* with a missing rate of *0%*. In short, the following analysis is based on the *99.81%* of the given data.
+After cleaning the data, the final data that I utilized for the analysis has *4789450 of observations with 20 columns (two additional date-related columns)* with a missing rate of *0%*. In short, the following analysis is based on the *99.81%* of the given data.
 
 # Data Preparation
 ## Missing values:
@@ -235,7 +235,7 @@ The analysis is based on the following assumptions:
 **Note: Generally speaking, *arrest rate* is calculated as *Numb. Of Arrest (Types) / (Total) Population*. In the question, the definition of the arrest rate is a bit abstract. The rate could be based on the population*(uniformed)* or other variables such as race, age, borough, sex, arrest types, and such. Hence, I utilized the above-mentioned variables to calculate the arrest rate of each case by year as well as the total population to compute the overall arrest rate.**
 
 
-The overall arrest rate throughout the time shows the **decreasing trend** (Feature 1,2); however, the arrest rate of race, gender, age group, borough, and the top 5 arrest types shows the different results (Feature 3,4): arrest rates of race, borough, and gender do not change much, while the top 5 arrest types and age group display distinctive changes. 
+The overall arrest rate throughout the time shows the **decreasing trend** (Feature 1,2); however, the arrest rate of race, gender, age group, borough, and the top 5 arrest types shows the different results (Feature 3,4): arrest rates of race, borough, and gender do not change much, while the top 5 arrest types(i.e. Felony Assault is listed as Top 5 in 2018 when Other Offenses Related is no longer in Top 5) and age group(i.e. in age group: 18-24 and 25-44, 5% decrease and increase for each group) display distinctive changes. 
 
 The result of the multivariate linear regression also states that the arrest rates are **decreasing** across the time, holding the above-mentioned variable fixed. Controlling for other variables, one year increase in a year would decrease the arrest rate by **-8.014e-07** on average.
 
@@ -247,12 +247,11 @@ The result of the multivariate linear regression also states that the arrest rat
 The most frequent pd_desc types in 2018 are **Assult 3, Larceny Petit From Open Areas, Traffic, Assault 2&1, and Controlled Substance**. (please see Table 1 in the appendix) 
 
 Regarding the overall trend of the top 5 arrests, one could say that the trend is **moving from increasing to decreasing starting from 2014 and that there is a high seasonality** as the feature 5 shows. 
-Yet, looking at the trend for each type, one could see that the arrest frequency varies across the year:
+Yet, looking at the trend for each type, one could see that the arrest frequency varies across the year: the arrest frequency of Assault 3 has been varied between 29% and 43%, even though it accounts for the biggest portion of the arrests across the year, from 2009 to 2018. The frequency of another type of Assault, 2&1, does not show much fluctuation. Still, one could see that since 2012, it is not listed on the top 3 anymore. 
 
-the arrest frequency of Assault 3 has been varied between 29% and 43%, even though it accounts for the biggest portion of the arrests across the year, from 2009 to 2018. The frequency of another type of Assault, 2&1, does not show much fluctuation. Still, one could see that since 2012, it is not listed on the top 3 anymore. 
 Lastly, December is the month that has the lowest arrest rates throughout the years, when May has the highest. 
 
-Still, one could say that the **frequency** of those top 5 types is **increased** due to the fact that the *mean of the overall number of arrests of those types is increased* compared to that of the beginning year. This could be supported by the Feature 6: Linear Regression.
+Still, one could say that the **frequency** of those top 5 types is **increased** due to the fact that the *mean of the overall number of arrests of those types is increased* compared to that of the beginning year. This could be supported by the Feature 6: Linear Regression.(P-val of yr is **1.629e-01**)
 
 
 ## <font size="4"> If we think of arrests as a sample of total crime, is there more crime in precinct 19 (Upper East Side) than precinct 73 (Brownsville)?  Describe the trend, variability and justify any statistical tests used to support this conclusion. </font>
@@ -262,20 +261,24 @@ Still, one could say that the **frequency** of those top 5 types is **increased*
 Based on the *monthly mean of arrests*, one can say that Precinct 73 has a **greater average amount of crime** than precinct 19 across the time on average(Feature 7).
 Yet, to answer this question, one should be careful since the analysis disregard the demographic difference between the two communities. To confirm, I ran a linear regression (Feature 8). 
 
-Based on the P-val of the precinct, one could say that the **location** does **not** have a statistical impact on the mean of crime controlling the year fixed. In contrast, the year has a statistical impact on the monthly mean number of arrests. 
+And, the P-val of the precinct 73, **location**, does **not** have a statistical impact on the mean of crimes, controlling the year fixed. In contrast, the year has a statistical impact on the monthly mean number of arrests. 
 
 Regarding the trend, one could say that it is **moving from increasing to decreasing trend from 2011 with seasonality**. This happens mostly because the crime rates in precinct 73 are decreasing. For instance, after reaching the peak rate, 43.87%, in 2011-07, it gradually decreases. And, the rate remains around 13% since 2018-08 (Feature 9). 
 
-*Further research on the characteristics of each neighborhood such as ethnicity, environment, economic status, and such could help one to have a better understanding of the crime rates.*
+*Further research on the characteristics of each neighborhood such as ethnicity, environment, economic status, and such could help one to have a better understanding of the crime rates between the two communities.*
 
 
 ## <font size="4"> What model would you build to predict crime to better allocate NYPD resources? What challenges do you foresee? What variables would be included? How would you evaluate the model? Discuss in no more than 150 words.</font>
 
-Forecasting, in general, is difficult, especially when the outcome is expected to be influenced by unexpected variables, such as death or crime. Hence, to select a model, I generated various models. And, based on the AIC, RMSE, ME, and MPE of the multiple models, I would utilize the *ARIMA(0,1,1)(0,1,1)[12]* model to forecast crime.
+Forecasting, in general, is difficult, especially when the outcome is expected to be influenced by unexpected variables, such as death and crime. Hence, to select a model, I generated various models. And, based on the AIC, RMSE, ME, and MPE of the multiple models, I would utilize the *ARIMA(0,1,1)(0,1,1)[12]* model to forecast crime.
 
-The analysis is based on the arrest rate that is calculated with the uniformed total population across the year. As the above analysis shows, this tends to ignore the difference among the districts, race, age group, borough, crime types and such. To improve, I would incorporate the variables that could explain the characteristics of each district, race, age group, borough, and crime types. 
+The analysis is based on the arrest rate based on *uniformed total population* across the year. As the above analysis shows, this tends to ignore the difference among the districts, race, age group, borough, crime types and such. 
 
-As an evaluation, I would pay attention to *RMSE, ME, and MPE* more because large errors are undesirable in terms of forecasting, and ME and MPE allow for the bias check.
+Incorporating the variables that could *explain the characteristics of each district* - race, age group, borough, and crime types -  would be helpful. Still, this is *vulnerable to bias data*. 
+
+As an evaluation, I would pay attention to *RMSE, ME, and MPE more* because large errors are undesirable in terms of forecasting, and ME and MPE allow for the bias check.
+
+
 
 
 

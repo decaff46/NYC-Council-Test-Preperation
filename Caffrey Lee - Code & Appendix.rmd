@@ -31,7 +31,7 @@ library(stddiff)
 
 ```{r load data}
 dat = fread("NYPD_Arrests_Data__Historic_.csv")
-pop = fread('New_York_City_Population_by_Borough__1950_-_2040.csv') # this is modified version and use the uniformed total population of 2010 for across the year. 
+pop = fread('New_York_City_Population_by_Borough__1950_-_2040.csv') # this is modified version and uses the uniformed total population of 2010 for across the year. 
 setnames(pop, old = c('V1', 'V2'), new = c('arrest_boro', '2010_ pop'))
 pop[, total:= sum(`2010_ pop`)]
 
@@ -489,7 +489,8 @@ In short, the overall arrest rate throughout the time shows the decreasing trend
 
 
 Let's confirm with the regression analysis for the overall trend of arrest rate:
-+ Regression Analysis: linear regression
+
+  + Regression Analysis: linear regression
 ```{r question 1 regression analsis}
 
 q1.dat = clean_dat[yr >=2015 & ofns_desc %in% unique(rate.by.ofns_desc.top5$target), .N, by = c('arrest_date', 'age_group', 'perp_race', 'perp_sex', 'arrest_boro', 'ofns_desc', 'yr', 'yr_mon')] 
