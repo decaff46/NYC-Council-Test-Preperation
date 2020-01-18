@@ -270,15 +270,13 @@ Regarding the trend, one could say that it is **moving from increasing to decrea
 
 ## <font size="4"> What model would you build to predict crime to better allocate NYPD resources? What challenges do you foresee? What variables would be included? How would you evaluate the model? Discuss in no more than 150 words.</font>
 
-Forecasting, in general, is difficult, especially when the outcome is expected to be influenced by unexpected variables, such as death and crime. Hence, to select a model, I generated various models. And, based on the AIC, RMSE, ME, and MPE of the multiple models, I would utilize the *ARIMA(0,1,1)(0,1,1)[12]* model to forecast crime.
+Forecasting, in general, is difficult, especially when the outcome is expected to be influenced by unexpected variables. Hence, to select a model, I generated various models. And, based on the AIC, RMSE, ME, and MPE of the multiple models, I would utilize the *ARIMA(0,1,1)(0,1,1)[12]* model to forecast crime.
 
 The analysis is based on the arrest rate based on *uniformed total population* across the year. As the above analysis shows, this tends to ignore the difference among the districts, race, age group, borough, crime types and such. 
 
-Incorporating the variables that could *explain the characteristics of each district* - race, age group, borough, and crime types -  would be helpful. Still, this is *vulnerable to bias data*. 
+Incorporating the variables that could *explain the characteristics of each district* - race, age group, borough, and crime types -  would be helpful. Still, this is *vulnerable to bias*. 
 
 As an evaluation, I would pay attention to *RMSE, ME, and MPE more* because large errors are undesirable in terms of forecasting, and ME and MPE allow for the bias check.
-
-
 
 
 
